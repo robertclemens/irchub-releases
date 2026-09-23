@@ -1,0 +1,3 @@
+# base64 of the 32-byte raw Ed25519 release-signing PUBLIC key.
+# Matches ircbot/bot.h BOT_UPDATE_PUBKEY_B64. Verification only.
+qkXMh/F8TC+cnKuIwrP5TJIynfrLBD+MDUwvkyh9lBU=
