@@ -13,3 +13,5 @@
 #   8 libc       gnu | musl | any
 #   9 min_from   oldest version this artifact may upgrade FROM ('*' = any)
 v2.4.0 2026-09-23 https://raw.githubusercontent.com/robertclemens/irchub-releases/main/irchub/rs/binaries/irchub-rs-v2.4.0-x86_64-linux-static.tar.gz 47672a7b7ac33dbae79249b5dc32d3b70589957d62279f46f9661ec6b0909969 none bin x86_64 any *
+v2.4.0 2026-09-23 https://raw.githubusercontent.com/robertclemens/irchub-releases/main/irchub/rs/binaries/irchub-rs-v2.4.0-x86_64-linux-gnu.tar.gz fbe5aaad105c324edb26d0ff7d4f25a30c0b17b7f2eca4781bd1bf920e2ae830 none bin x86_64 gnu *
+v2.4.0 2026-09-23 https://raw.githubusercontent.com/robertclemens/irchub-releases/main/irchub/rs/sources/irchub-rs-v2.4.0-src.tar.gz 3f149e4830530b7cea0b2bb9b6e3bd3bdd6bbcd42b0ad87c77947dd88663be8f cargo src any any *
