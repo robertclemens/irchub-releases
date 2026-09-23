@@ -4,3 +4,5 @@
 # columns: version  variant  codebase_manifest_path  min_from
 v2.4.0 c irchub/c/releases.txt *
 v2.4.0 rs irchub/rs/releases.txt *
+v2.4.1 c irchub/c/releases.txt *
+v2.4.1 rs irchub/rs/releases.txt *
