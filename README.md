@@ -107,7 +107,11 @@ taken from the repo directory name.
 See the comment header in any `releases.txt`. The first five are the legacy
 `version date url sha256 deps` format (still parsed by older daemons);
 `kind arch libc min_from` were appended for binary/variant selection and stepped
-upgrades and are ignored by older parsers. `mkmanifest.py` keeps rows whose URL
+upgrades and are ignored by older parsers. Column 10, `cpu`, lists the CPU
+features an artifact needs (`/proc/cpuinfo` names; `-` = none; `arch:feature`
+applies only on that arch), taken from `CPU_NEEDS` in `tools/relcommon.py`: the
+Rust builds need graviola's set, the C builds nothing. A daemon that cannot meet
+it answers "unable" at PREPARE instead of crashing mid-upgrade. `mkmanifest.py` keeps rows whose URL
 points outside this repo (e.g. a GitHub tag archive) and drops placeholder rows
 without a real SHA-256. Any `releases.sig` whose manifest changed is deleted, so
 an unsigned manifest is never left beside a stale signature.

@@ -78,6 +78,30 @@ def product(override=None):
     return p
 
 
+# CPU features each variant's artifacts need (manifest column 10), per arch,
+# as /proc/cpuinfo names them.  The Rust builds use rustls on graviola, which
+# asserts these at its first crypto call — a node without them must be told
+# "unable" at PREPARE, not crash mid-upgrade.  Mirrors graviola 0.4.1's
+# verify_cpu_features(); the C builds (OpenSSL) need nothing.
+CPU_NEEDS = {
+    "rs": {
+        "x86_64": "aes,pclmulqdq,bmi1,adx,avx,avx2",
+        "aarch64": "neon,aes,pmull,sha2",
+    },
+}
+
+
+def cpu_needs(variant, arch):
+    """Column 10 for one row: '-' = none; a src row (arch 'any') carries every
+    arch's set, each entry qualified 'arch:feature'."""
+    per = CPU_NEEDS.get(variant)
+    if not per:
+        return "-"
+    if arch == "any":
+        return ",".join(f"{a}:{f}" for a, fs in sorted(per.items()) for f in fs.split(","))
+    return per.get(arch, "-")
+
+
 def raw_base(prod):
     """What the daemons compile in as <PRODUCT>_UPDATE_BASE, minus the product dir."""
     return f"https://raw.githubusercontent.com/robertclemens/{prod}-releases/main"

@@ -47,6 +47,7 @@ HEADER = """\
 #   7 arch       x86_64 | any        (any = arch-independent, e.g. src)
 #   8 libc       gnu | musl | any
 #   9 min_from   oldest version this artifact may upgrade FROM ('*' = any)
+#  10 cpu        CPU features it needs ('-' = none; 'arch:feat' = only on arch)
 """
 
 TOP_HEADER = """\
@@ -131,7 +132,8 @@ def variant_rows(prod, variant, base):
         path = os.path.join(vd, "binaries" if kind == "bin" else "sources", name)
         deps = "none" if kind == "bin" else (deps or rc.PRODUCTS[prod][variant]["src_deps"])
         url = f"{ours}{'binaries' if kind == 'bin' else 'sources'}/{name}"
-        rows.append([ver, date or rc.today(), url, sha256(path), deps, kind, arch, libc, minf or "*"])
+        rows.append([ver, date or rc.today(), url, sha256(path), deps, kind, arch, libc,
+                     minf or "*", rc.cpu_needs(variant, arch)])
 
     # Keep hand-listed rows that point somewhere else (not regenerable from disk).
     kept = []
@@ -144,7 +146,7 @@ def variant_rows(prod, variant, base):
             print(f"  dropped    {variant}: placeholder row {f[0]} {f[2]} (no real sha256)",
                   file=sys.stderr)
             continue
-        kept.append((f + ["src", "any", "any", "*"][max(0, len(f) - 5):])[:9])
+        kept.append((f + ["src", "any", "any", "*", "-"][max(0, len(f) - 5):])[:10])
     if kept:
         print(f"  kept       {variant}: {len(kept)} external row(s) "
               f"({', '.join(sorted({k[0] for k in kept}, key=rc.verkey))})")
