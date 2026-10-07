@@ -1,7 +1,7 @@
 # robertclemens/irchub-releases
 
 Signed release channel for **irchub**. Consumed by the irchub self-updater and by
-hub_admin-initiated network upgrades.
+network upgrades started from a hub's SSH console (`upgrade start`).
 
 ## Trust model — Ed25519 (NOT GPG)
 
@@ -26,8 +26,8 @@ The **private** key never lives here. Robert signs locally (`tools/sign.py`, see
 #    commit and push both to origin main.
 
 # 2. Build every artifact into this repo (both variants, same version):
-tools/mkreleases.py                  # static x86_64 binaries (default)
-tools/mkreleases.py --gnu --src      # + a dynamic glibc build and source tarballs
+tools/mkreleases.py                  # everything: c + rs, static + gnu + src
+tools/mkreleases.py rs static        # only the named variant(s) / kind(s)
 tools/mkreleases.py --min-from 2.0    # this release may only be installed over >= 2.0
 
 # 3. Regenerate every manifest (per-variant + top level) and meta.tsv:
@@ -41,6 +41,22 @@ tools/sign.py --verify               # re-check at any time, no key needed
 git add -A && git commit -m "irchub vX.Y" && git push
 ```
 
+### Past releases
+
+```
+tools/mkreleases.py --version all          # fill every gap of every version in meta.tsv
+tools/mkreleases.py --version 2.4.3 static # one version, one kind
+tools/mkreleases.py rs --version 2.3.0 --commit 737142c   # no tag: name the commit
+```
+
+`--version` builds the release from the source repo's `v<version>` tag (else the
+commit recorded in `meta.tsv`'s `commit` column, else `--commit`), checks the tree
+there reports that version, and builds **only artifacts that are missing** —
+existing ones are left alone. A version that can't be built (no tag, an old tree
+without the static target, a failed smoke test) is reported and the rest go on.
+Tag every release commit (`git tag -a vX.Y.Z -m vX.Y.Z`) so this keeps working.
+Then run `mkmanifest.py` and `sign.py` as usual.
+
 `mkreleases.py` builds the **committed** tree (`git HEAD`) and refuses a tree with
 uncommitted changes (`--allow-dirty` exists for throwaway test builds — never
 publish those). It refuses to overwrite an existing artifact with different
@@ -51,9 +67,9 @@ is already in a signed manifest. Both variants must report the same version.
 
 | artifact | built by | runs on |
 |---|---|---|
-| `…-x86_64-linux-static.tar.gz` (default) | C: Alpine container, static musl + static OpenSSL/libcurl (`tools/musl.Dockerfile` → `ircbuild-musl:static`, built on first use). Rust: this host, `x86_64-unknown-linux-musl` target | any x86_64 Linux — Ubuntu 24.04 / 26.04 LTS (the target servers), older distros, Alpine. Manifest libc = `any` |
-| `…-x86_64-linux-gnu.tar.gz` (`--gnu`) | this host, dynamic, distro OpenSSL/libcurl | glibc hosts at least as new as the build host |
-| `…-src.tar.gz` (`--src`) | `git archive` of the committed tree | a host with the build deps in `meta.tsv` |
+| `…-x86_64-linux-static.tar.gz` (`static`) | C: Alpine container, static musl + static OpenSSL/libcurl (`tools/musl.Dockerfile` → `ircbuild-musl:static`, built on first use). Rust: this host, `x86_64-unknown-linux-musl` target | any x86_64 Linux — Ubuntu 24.04 / 26.04 LTS (the target servers), older distros, Alpine. Manifest libc = `any` |
+| `…-x86_64-linux-gnu.tar.gz` (`gnu`) | this host, dynamic, distro OpenSSL/libcurl | glibc hosts at least as new as the build host |
+| `…-src.tar.gz` (`src`) | `git archive` of the committed tree | a host with the build deps in `meta.tsv` |
 
 Updaters take the first matching binary row, and the static row is listed first,
 so nodes install the static build unless it is missing. Trade-off: a static
@@ -88,7 +104,8 @@ robertclemens/irchub-releases/
     ├── c/                  # C variant
     │   ├── releases.txt    # generated — do not edit
     │   ├── releases.sig
-    │   ├── meta.tsv        # version, date, src_deps, min_from (one row per version)
+    │   ├── meta.tsv        # version, date, src_deps, min_from, static_libs (one row per version;
+    │   │               #   static_libs = libs the static build linked in, never in the manifest)
     │   ├── sources/        # irchub-c-vX.Y.Z-src.tar.gz
     │   └── binaries/       # irchub-c-vX.Y.Z-x86_64-linux-{static,gnu}.tar.gz
     └── rs/                 # Rust variant (wire/config compatible with C)

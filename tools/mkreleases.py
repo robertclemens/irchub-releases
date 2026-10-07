@@ -1,12 +1,25 @@
 #!/usr/bin/env python3
 """Build this product's release artifacts into the repo's layout.
 
-    tools/mkreleases.py [c] [rs] [--gnu] [--src] [--min-from VER]
-                        [--allow-dirty] [--force] [--no-smoke]
-                        [--c-src DIR] [--rs-src DIR]
+    tools/mkreleases.py [c] [rs] [static] [gnu] [src] [--version VER|all ...]
+                        [--commit REF] [--min-from VER] [--allow-dirty]
+                        [--force] [--no-smoke] [--c-src DIR] [--rs-src DIR]
 
-For each variant (default: both) it builds the COMMITTED tree (git HEAD of
-the source repo), packs the binary as <product>/<product> inside
+The words pick what to build: variants c / rs and artifact kinds static /
+gnu / src.  Naming none of a group means all of it, so the bare command
+builds every kind of both variants; `rs static` builds only that one target.
+(--gnu / --src are old spellings of the gnu / src words.)
+
+Without --version it builds the COMMITTED tree (git HEAD of each source
+repo), at the version that tree reports.  --version VER rebuilds a past
+release from the source repo's v<VER> tag (or, without a tag, the commit
+recorded in meta.tsv, or --commit) and only fills in artifacts that are
+missing: an existing one is left alone.  --version all does that for every
+version in the variants' meta.tsv; a version that cannot be built (no tag,
+an old tree without the static target, a failed smoke test) is reported and
+the rest go on.
+
+For each variant it packs the binary as <product>/<product> inside
   <product>/<variant>/binaries/<product>-<variant>-v<ver>-<arch>-linux-static.tar.gz
 (the layout every updater unpacks with --strip-components=1), and records the
 version in <product>/<variant>/meta.tsv.  Then run tools/mkmanifest.py, then
@@ -22,7 +35,7 @@ daemons are built on this host for the <arch>-unknown-linux-musl target
 not pick up distro OpenSSL/libcurl security fixes: a fix there means a new
 release.
 
---gnu also builds a dynamic glibc artifact on THIS host (…-linux-gnu.tar.gz).
+gnu is a dynamic glibc artifact built on THIS host (…-linux-gnu.tar.gz).
 It uses the distro's OpenSSL/libcurl but only runs on hosts at least as new as
 this one; the manifest lists the static artifact first, so updaters pick the
 static one unless it is absent.
@@ -50,6 +63,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import relcommon as rc  # noqa: E402
@@ -78,10 +92,17 @@ def out(cmd, **kw):
 
 
 # ------------------------------------------------------------------ source
-def read_version(src, cfg):
+def read_version(src, cfg, ref=None):
+    """The version the daemon reports, from the work tree or from commit ref."""
     path = os.path.join(src, cfg["version_file"])
-    with open(path) as f:
-        m = re.search(cfg["version_re"], f.read())
+    if ref:
+        text = subprocess.run(["git", "-C", src, "show", f"{ref}:{cfg['version_file']}"],
+                              capture_output=True, text=True).stdout
+        path = f"{path} @ {ref[:12]}"
+    else:
+        with open(path) as f:
+            text = f.read()
+    m = re.search(cfg["version_re"], text)
     if not m:
         rc.die(f"no version literal found in {path}")
     ver = m.group(1).lstrip("v")
@@ -113,6 +134,21 @@ def git_state(src, allow_dirty):
     return head, ctime, dirty
 
 
+def resolve_release(src, ver, meta_commit, commit_opt):
+    """(commit, commit_time) a past release is rebuilt from, or None: the
+    v<ver> tag, else meta.tsv's recorded commit, else --commit."""
+    for ref in (f"v{ver}", meta_commit if meta_commit not in ("", "-") else None, commit_opt):
+        if not ref:
+            continue
+        r = subprocess.run(["git", "-C", src, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}"],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            head = r.stdout.strip()
+            ctime = int(out(["git", "-C", src, "log", "-1", "--format=%ct", head]).strip())
+            return head, ctime
+    return None
+
+
 def tree_files(src, dirty, untracked=True):
     """Files of the release: HEAD's, or with --allow-dirty the working tree's —
     tracked plus untracked-but-not-ignored, so a new file not yet `git add`ed
@@ -124,10 +160,10 @@ def tree_files(src, dirty, untracked=True):
     return None   # use git archive
 
 
-def export_tree(src, dirty, dest):
+def export_tree(src, dirty, dest, ref="HEAD"):
     """The exact tree the release is built from, into dest."""
     if not dirty:
-        p1 = subprocess.Popen(["git", "-C", src, "archive", "--format=tar", "HEAD"],
+        p1 = subprocess.Popen(["git", "-C", src, "archive", "--format=tar", ref],
                               stdout=subprocess.PIPE)
         run(["tar", "-x", "-C", dest], stdin=p1.stdout)
         if p1.wait() != 0:
@@ -166,6 +202,33 @@ def ensure_musl_image():
     print(f"  building   {MUSL_IMAGE} (first use)")
     run(["docker", "build", "-q", "-t", MUSL_IMAGE, "-f",
          os.path.join(here, "musl.Dockerfile"), here], stdout=subprocess.DEVNULL)
+
+
+def static_libs(variant):
+    """The third-party code a static artifact of this variant links in, for
+    meta.tsv: the C build's Alpine release and package versions (read from the
+    image it was just built in), the Rust build's rustc (its musl target
+    carries rustc's own self-contained musl; the crates are in Cargo.lock)."""
+    if variant == "c":
+        r = subprocess.run(["docker", "run", "--rm", "--network", "none", MUSL_IMAGE, "sh", "-c",
+                            "cat /etc/alpine-release; apk list -I 2>/dev/null"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            rc.die(f"cannot list the packages of {MUSL_IMAGE}: {r.stderr.strip()}")
+        lines = r.stdout.splitlines()
+        got = {}
+        for line in lines[1:]:
+            m = re.match(r"^\S+?-(\d[^-\s]*-r\d+) \S+ \{([^}]+)\}", line)
+            if m and m.group(2) in rc.STATIC_ORIGINS:
+                got[m.group(2)] = m.group(1)
+        parts = [f"alpine={lines[0].strip()}"] + [f"{k}={v}" for k, v in sorted(got.items())]
+    else:
+        v = subprocess.run(["rustc", "-V"], capture_output=True, text=True).stdout.split()
+        parts = [f"rustc={v[1] if len(v) > 1 else '?'}"]
+    field = ",".join(parts)
+    if not re.fullmatch(r"[A-Za-z0-9=.,_+~-]+", field):
+        rc.die(f"unexpected characters in static_libs {field!r}")
+    return field
 
 
 def musl_target(arch):
@@ -291,10 +354,10 @@ def pack_binary(prod, binary, mtime):
     return _tar_gz([(f"{prod}/", None, 0), (f"{prod}/{prod}", data, 0o700)], mtime)
 
 
-def pack_source(src, dirty, prefix, mtime):
+def pack_source(src, dirty, prefix, mtime, ref="HEAD"):
     if not dirty:
         return out_bytes(["git", "-C", src, "archive", "--format=tar.gz",
-                          f"--prefix={prefix}/", "HEAD"])
+                          f"--prefix={prefix}/", ref])
     members = [(f"{prefix}/", None, 0)]
     # Tracked files only: an untracked file may be anything (editor or chat
     # history, local notes) and a source tarball is meant to be shared.
@@ -331,16 +394,78 @@ def place(path, data, force):
 
 
 # ------------------------------------------------------------------ main
+KINDS = ("static", "gnu", "src")
+
+
+def build_variant(prod, v, src, ver, ref, ctime, dirty, kinds, arch, smoke_on, a, fill):
+    """Build the chosen kinds of one variant at one version into the repo.
+    fill: leave an artifact that already exists alone (past releases)."""
+    cfg = rc.PRODUCTS[prod][v]
+    libcs = (["static"] if "static" in kinds else []) + \
+            ([("gnu" if host_libc() == "gnu" else "musl")] if "gnu" in kinds else [])
+    libs = None
+    for libc in libcs:
+        dest = os.path.join(rc.vdir(prod, v), "binaries", rc.bin_name(prod, v, ver, arch, libc))
+        if fill and os.path.exists(dest) and not a.force:
+            print(f"  present    {os.path.relpath(dest, rc.ROOT)}")
+            continue
+        with tempfile.TemporaryDirectory(prefix=f"mkrel-{prod}-{v}-") as work:
+            os.makedirs(os.path.join(work, "src"))
+            export_tree(src, dirty, os.path.join(work, "src"), ref)
+            binary = build(prod, v, cfg, work, libc, arch)
+            if libc == "static":
+                libs = static_libs(v)
+            if not os.path.isfile(binary):
+                rc.die(f"build finished but {binary} is missing")
+            dynamic = elf_interp(binary)
+            if libc == "static" and dynamic:
+                rc.die(f"{binary} was meant to be static but asks for a dynamic loader")
+            if dynamic:
+                need = glibc_needed(binary)
+                print(f"  {libc:<10} dynamic{f', needs glibc >= ' + '.'.join(map(str, need)) if need else ''}")
+            else:
+                print(f"  {libc:<10} fully static")
+            # A dynamic build only has to run where it was built.
+            for where in (smoke_on if libc == "static" else smoke_on[:1]):
+                smoke(binary, prod, where)
+            place(dest, pack_binary(prod, binary, ctime), a.force)
+    if "src" in kinds:
+        dest = os.path.join(rc.vdir(prod, v), "sources", rc.src_name(prod, v, ver))
+        if fill and os.path.exists(dest) and not a.force:
+            print(f"  present    {os.path.relpath(dest, rc.ROOT)}")
+        else:
+            place(dest, pack_source(src, dirty, f"{prod}-{v}-v{ver}", ctime, ref), a.force)
+
+    meta_path = os.path.join(rc.vdir(prod, v), "meta.tsv")
+    meta = rc.meta_load(meta_path)
+    key = f"v{ver}"
+    first = time.strftime("%Y-%m-%d", time.gmtime(ctime)) if fill else rc.today()
+    row = meta.get(key, [first, cfg["src_deps"], "*", "-", "-"])
+    row = [row[0] or first, row[1] or cfg["src_deps"], row[2] or "*",
+           libs or row[3] or "-", (row[4] or "-") if dirty else ref]
+    if a.min_from:
+        row[2] = a.min_from
+    meta[key] = row
+    rc.meta_save(meta_path, meta)
+    print(f"  meta.tsv   {key}  date={row[0]} min_from={row[2]} static_libs={row[3]} "
+          f"commit={row[4][:12]}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("variants", nargs="*", metavar="c|rs", help="variants to build (default: both)")
+    ap.add_argument("what", nargs="*", metavar="c|rs|static|gnu|src",
+                    help="variants and artifact kinds to build (default: all)")
+    ap.add_argument("--version", action="append", default=[], metavar="VER|all",
+                    help="rebuild missing artifacts of a past release (repeatable; "
+                         "'all' = every version in meta.tsv)")
+    ap.add_argument("--commit", help="with one --version and one variant: the commit to "
+                                     "build when the source repo has no v<VER> tag")
     ap.add_argument("--product", help="override the product taken from the repo name")
-    ap.add_argument("--src", action="store_true", help="also pack source tarballs")
+    ap.add_argument("--src", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--gnu", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--min-from", help="oldest version this release may upgrade FROM (default *)")
     ap.add_argument("--allow-dirty", action="store_true",
                     help="build uncommitted working trees (never publish these)")
-    ap.add_argument("--gnu", action="store_true",
-                    help="also build a dynamic glibc artifact on this host")
     ap.add_argument("--no-smoke", action="store_true", help="skip the start-up smoke tests")
     ap.add_argument("--force", action="store_true", help="replace an existing, different artifact")
     ap.add_argument("--c-src", help="C source tree (default from relcommon.PRODUCTS)")
@@ -349,14 +474,34 @@ def main():
     sys.stdout.reconfigure(line_buffering=True)   # keep order with stderr notes
 
     prod = rc.product(a.product)
-    bad = [v for v in a.variants if v not in rc.VARIANTS]
+    bad = [w for w in a.what if w not in rc.VARIANTS + KINDS]
     if bad:
-        rc.die(f"unknown variant(s) {', '.join(bad)} (c, rs)")
-    variants = [v for v in rc.VARIANTS if v in a.variants] or list(rc.VARIANTS)
+        rc.die(f"unknown word(s) {', '.join(bad)} (c, rs, static, gnu, src)")
+    variants = [v for v in rc.VARIANTS if v in a.what] or list(rc.VARIANTS)
+    kinds = [k for k in KINDS if k in a.what or (k == "gnu" and a.gnu) or (k == "src" and a.src)]
+    if not any(k in a.what for k in KINDS):
+        kinds = list(KINDS)
     if a.min_from and a.min_from != "*" and not rc.VERSION_OK.match(a.min_from.lstrip("v")):
         rc.die(f"--min-from {a.min_from!r} is not a version")
+    if a.commit and (len(a.version) != 1 or a.version == ["all"] or len(variants) != 1):
+        rc.die("--commit needs exactly one --version VER and one variant (c or rs)")
+    if a.version and (a.allow_dirty or a.min_from):
+        rc.die("--version builds a past release from git as it was released; "
+               "--allow-dirty and --min-from do not apply")
     srcs = {v: os.path.abspath(os.path.expanduser(
         (a.c_src if v == "c" else a.rs_src) or rc.PRODUCTS[prod][v]["src"])) for v in variants}
+
+    arch = platform.machine()
+    smoke_on = [] if a.no_smoke else ["host"]
+    if not a.no_smoke:
+        if shutil.which("docker") and have_image(OLD_IMAGE):
+            smoke_on.append(OLD_IMAGE)
+        else:
+            print(f"  note: {OLD_IMAGE} not present — old-machine smoke test skipped",
+                  file=sys.stderr)
+
+    if a.version:
+        return past_releases(prod, variants, kinds, srcs, arch, smoke_on, a)
 
     # Versions first, all of them, so a mismatch stops before any build.
     vers = {v: read_version(srcs[v], rc.PRODUCTS[prod][v]) for v in variants}
@@ -371,56 +516,12 @@ def main():
             print(f"  note: {srcs['rs']}/Cargo.toml says {m.group(1)}; the daemon reports "
                   f"{ver} (consts.rs), which is what ships", file=sys.stderr)
 
-    arch = platform.machine()
-    libcs = ["static"] + (["gnu" if host_libc() == "gnu" else "musl"] if a.gnu else [])
-    print(f"{prod} v{ver} — {', '.join(variants)} — {arch}: {', '.join(libcs)}")
-    smoke_on = [] if a.no_smoke else ["host"]
-    if not a.no_smoke:
-        if shutil.which("docker") and have_image(OLD_IMAGE):
-            smoke_on.append(OLD_IMAGE)
-        else:
-            print(f"  note: {OLD_IMAGE} not present — old-machine smoke test skipped",
-                  file=sys.stderr)
-
+    print(f"{prod} v{ver} — {', '.join(variants)} — {arch}: {', '.join(kinds)}")
     for v in variants:
-        cfg, src = rc.PRODUCTS[prod][v], srcs[v]
-        head, ctime, dirty = git_state(src, a.allow_dirty)
-        print(f"[{v}] {src} @ {head[:12]}{' + UNCOMMITTED CHANGES' if dirty else ''}")
-        for libc in libcs:
-            with tempfile.TemporaryDirectory(prefix=f"mkrel-{prod}-{v}-") as work:
-                os.makedirs(os.path.join(work, "src"))
-                export_tree(src, dirty, os.path.join(work, "src"))
-                binary = build(prod, v, cfg, work, libc, arch)
-                if not os.path.isfile(binary):
-                    rc.die(f"build finished but {binary} is missing")
-                dynamic = elf_interp(binary)
-                if libc == "static" and dynamic:
-                    rc.die(f"{binary} was meant to be static but asks for a dynamic loader")
-                if dynamic:
-                    need = glibc_needed(binary)
-                    print(f"  {libc:<10} dynamic{f', needs glibc >= ' + '.'.join(map(str, need)) if need else ''}")
-                else:
-                    print(f"  {libc:<10} fully static")
-                # A dynamic build only has to run where it was built.
-                for where in (smoke_on if libc == "static" else smoke_on[:1]):
-                    smoke(binary, prod, where)
-                place(os.path.join(rc.vdir(prod, v), "binaries",
-                                   rc.bin_name(prod, v, ver, arch, libc)),
-                      pack_binary(prod, binary, ctime), a.force)
-        if a.src:
-            place(os.path.join(rc.vdir(prod, v), "sources", rc.src_name(prod, v, ver)),
-                  pack_source(src, dirty, f"{prod}-{v}-v{ver}", ctime), a.force)
-
-        meta_path = os.path.join(rc.vdir(prod, v), "meta.tsv")
-        meta = rc.meta_load(meta_path)
-        key = f"v{ver}"
-        row = meta.get(key, [rc.today(), cfg["src_deps"], "*"])
-        row = [row[0] or rc.today(), row[1] or cfg["src_deps"], row[2] or "*"]
-        if a.min_from:
-            row[2] = a.min_from
-        meta[key] = row
-        rc.meta_save(meta_path, meta)
-        print(f"  meta.tsv   {key}  date={row[0]} min_from={row[2]}")
+        head, ctime, dirty = git_state(srcs[v], a.allow_dirty)
+        print(f"[{v}] {srcs[v]} @ {head[:12]}{' + UNCOMMITTED CHANGES' if dirty else ''}")
+        build_variant(prod, v, srcs[v], ver, head, ctime, dirty, kinds, arch, smoke_on, a,
+                      fill=False)
 
     if a.allow_dirty:
         print("\nwarning: built from uncommitted trees — do not publish these artifacts",
@@ -428,9 +529,56 @@ def main():
     print("\nnext: tools/mkmanifest.py, then tools/sign.py <private-key>")
 
 
+def past_releases(prod, variants, kinds, srcs, arch, smoke_on, a):
+    """--version: fill in the missing artifacts of releases already made."""
+    metas = {v: rc.meta_load(os.path.join(rc.vdir(prod, v), "meta.tsv")) for v in variants}
+    if "all" in a.version:
+        wanted = sorted({k.lstrip("v") for m in metas.values() for k in m}, key=rc.verkey)
+    else:
+        wanted = []
+        for w in a.version:
+            w = w.lstrip("v")
+            if not rc.VERSION_OK.match(w):
+                rc.die(f"--version {w!r} is not a version")
+            if w not in wanted:
+                wanted.append(w)
+    print(f"{prod} past releases {', '.join(wanted)} — {', '.join(variants)} — "
+          f"{arch}: {', '.join(kinds)}")
+    failed = []
+    for ver in wanted:
+        for v in variants:
+            key = f"v{ver}"
+            if "all" in a.version and key not in metas[v]:
+                continue
+            row = metas[v].get(key, [""] * rc.META_FIELDS)
+            got = resolve_release(srcs[v], ver, row[4], a.commit)
+            if not got:
+                print(f"[{v}] v{ver}: no v{ver} tag in {srcs[v]} and no commit recorded "
+                      f"— skipped (tag it, or pass --commit)", file=sys.stderr)
+                failed.append(f"{v} v{ver} (no tag)")
+                continue
+            head, ctime = got
+            print(f"[{v}] v{ver} {srcs[v]} @ {head[:12]}")
+            try:
+                have = read_version(srcs[v], rc.PRODUCTS[prod][v], head)
+                if have != ver:
+                    rc.die(f"{head[:12]} reports version {have}, not {ver}")
+                build_variant(prod, v, srcs[v], ver, head, ctime, False, kinds, arch,
+                              smoke_on, a, fill=True)
+            except (SystemExit, subprocess.CalledProcessError) as e:
+                why = e.code if isinstance(e, SystemExit) else \
+                    f"command failed (exit {e.returncode})"
+                print(f"  FAILED     {v} v{ver}: {why}", file=sys.stderr)
+                failed.append(f"{v} v{ver}")
+    if failed:
+        print(f"\nnot built: {', '.join(failed)}", file=sys.stderr)
+    print("\nnext: tools/mkmanifest.py, then tools/sign.py <private-key>")
+    return 1 if failed else 0
+
+
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except subprocess.CalledProcessError as e:
         cmd = " ".join(e.cmd) if isinstance(e.cmd, list) else str(e.cmd)
         rc.die(f"command failed (exit {e.returncode}): {cmd}")

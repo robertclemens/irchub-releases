@@ -32,8 +32,9 @@ PRODUCTS = {
         "rs": {
             "src": "~/ircbot.rs",
             "version_file": "src/consts.rs",
-            "version_re": r'BOT_VERSION:\s*&str\s*=\s*match\s+option_env!\("IRCBOT_VERSION"\)\s*\{'
-                          r'\s*Some\(v\)\s*=>\s*v,\s*None\s*=>\s*"([^"]+)"',
+            # 2.3.0 and older: a plain literal, no option_env! override
+            "version_re": r'BOT_VERSION:\s*&str\s*=\s*(?:match\s+option_env!\("IRCBOT_VERSION"\)\s*\{'
+                          r'\s*Some\(v\)\s*=>\s*v,\s*None\s*=>\s*)?"([^"]+)"',
             "cargo_bin": "ircbot",
             "src_deps": "cargo",
         },
@@ -49,13 +50,14 @@ PRODUCTS = {
             "build_static": "make clean >/dev/null && make release "
                             "LIBS=\"-static -lpthread $(pkg-config --static --libs libcurl)\"",
             "binary": "bin/irchub",
-            "src_deps": "gcc,make,libssl,libcurl",
+            "src_deps": "gcc,make,cmake,libssl,libcurl",
         },
         "rs": {
             "src": "~/irchub.rs",
             "version_file": "src/consts.rs",
-            "version_re": r'HUB_VERSION:\s*&str\s*=\s*match\s+option_env!\("IRCHUB_VERSION"\)\s*\{'
-                          r'\s*Some\(v\)\s*=>\s*v,\s*None\s*=>\s*"([^"]+)"',
+            # 2.3.0 and older: a plain literal, no option_env! override
+            "version_re": r'HUB_VERSION:\s*&str\s*=\s*(?:match\s+option_env!\("IRCHUB_VERSION"\)\s*\{'
+                          r'\s*Some\(v\)\s*=>\s*v,\s*None\s*=>\s*)?"([^"]+)"',
             "cargo_bin": "irchub",
             "src_deps": "cargo",
         },
@@ -138,12 +140,25 @@ def verkey(v):
 
 
 # --------------------------------------------------------------- meta.tsv
-# version <TAB> date <TAB> src_deps <TAB> min_from.  One row per released
-# version; the date is fixed the first time a version is seen so a manifest
-# regenerated later does not re-date old releases.
-META_HEADER = ("# version\tdate\tsrc_deps\tmin_from  (tab-separated; written by "
-               "tools/mkreleases.py, read by tools/mkmanifest.py)\n"
-               "# src_deps applies to source rows only; binary rows always carry 'none'.\n")
+# version <TAB> date <TAB> src_deps <TAB> min_from <TAB> static_libs <TAB> commit.
+# One row per released version; the date is fixed the first time a version is
+# seen so a manifest regenerated later does not re-date old releases.
+# static_libs is the third-party code linked into the static artifact (see
+# static_libs() in mkreleases.py), '-' when not recorded; commit is the source
+# commit the artifacts were built from (one per variant), '-' when not
+# recorded.  Neither reaches the manifest.
+META_HEADER = ("# version\tdate\tsrc_deps\tmin_from\tstatic_libs\tcommit  (tab-separated; "
+               "written by tools/mkreleases.py, read by tools/mkmanifest.py)\n"
+               "# src_deps applies to source rows only; binary rows always carry 'none'.\n"
+               "# static_libs: what the static build linked in (C: the Alpine release and "
+               "package versions; Rust: rustc), '-' = not recorded.\n"
+               "# commit: the source commit built (mkreleases.py --version uses it when the "
+               "source repo has no v<version> tag), '-' = not recorded.\n")
+META_FIELDS = 5   # the columns after the version
+
+# Alpine origin packages whose code a static C release links in.
+STATIC_ORIGINS = ("musl", "openssl", "curl", "nghttp2", "nghttp3", "zlib", "zstd", "brotli",
+                  "libidn2", "libpsl", "libunistring")
 
 
 def meta_load(path):
@@ -156,8 +171,7 @@ def meta_load(path):
                     continue
                 parts = line.split("\t")
                 ver = parts[0]
-                rest = (parts[1:] + ["", "", ""])[:3]
-                rows[ver] = rest
+                rows[ver] = (parts[1:] + [""] * META_FIELDS)[:META_FIELDS]
     return rows
 
 
@@ -165,7 +179,10 @@ def meta_save(path, rows):
     with open(path + ".tmp", "w") as f:
         f.write(META_HEADER)
         for ver in sorted(rows, key=verkey):
-            f.write("\t".join([ver] + rows[ver]) + "\n")
+            row = (list(rows[ver]) + [""] * META_FIELDS)[:META_FIELDS]
+            row[3] = row[3] or "-"
+            row[4] = row[4] or "-"
+            f.write("\t".join([ver] + row) + "\n")
     os.replace(path + ".tmp", path)
 
 

@@ -121,14 +121,14 @@ def variant_rows(prod, variant, base):
 
     added = [v for v in sorted({f[0] for f in found}, key=rc.verkey) if v not in meta]
     for v in added:
-        meta[v] = [rc.today(), rc.PRODUCTS[prod][variant]["src_deps"], "*"]
+        meta[v] = [rc.today(), rc.PRODUCTS[prod][variant]["src_deps"], "*", "-", "-"]
     if added:
         rc.meta_save(meta_path, meta)
         print(f"  meta.tsv   {variant}: added {', '.join(added)}")
 
     rows = []
     for ver, kind, name, arch, libc in found:
-        date, deps, minf = meta[ver]
+        date, deps, minf = meta[ver][:3]
         path = os.path.join(vd, "binaries" if kind == "bin" else "sources", name)
         deps = "none" if kind == "bin" else (deps or rc.PRODUCTS[prod][variant]["src_deps"])
         url = f"{ours}{'binaries' if kind == 'bin' else 'sources'}/{name}"
