@@ -12,3 +12,5 @@ v2.4.3 c irchub/c/releases.txt *
 v2.4.3 rs irchub/rs/releases.txt *
 v2.4.4 c irchub/c/releases.txt *
 v2.4.4 rs irchub/rs/releases.txt *
+v2.4.5 c irchub/c/releases.txt *
+v2.4.5 rs irchub/rs/releases.txt *
