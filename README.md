@@ -29,6 +29,9 @@ The **private** key never lives here. Robert signs locally (`tools/sign.py`, see
 tools/mkreleases.py                  # everything: c + rs, static + gnu + src
 tools/mkreleases.py rs static        # only the named variant(s) / kind(s)
 tools/mkreleases.py --min-from 2.0    # this release may only be installed over >= 2.0
+#   Mandatory steps (relcommon.MIN_FROM_FLOORS, now 2.5.0: the PBKDF2 600k
+#   rewrite of .cnf/.pass) are applied on top: every release after 2.5.0 gets
+#   min_from >= v2.5.0 in meta.tsv and the manifests, --min-from or not.
 
 # 3. Regenerate every manifest (per-variant + top level) and meta.tsv:
 tools/mkmanifest.py

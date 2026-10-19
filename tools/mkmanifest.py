@@ -133,7 +133,7 @@ def variant_rows(prod, variant, base):
         deps = "none" if kind == "bin" else (deps or rc.PRODUCTS[prod][variant]["src_deps"])
         url = f"{ours}{'binaries' if kind == 'bin' else 'sources'}/{name}"
         rows.append([ver, date or rc.today(), url, sha256(path), deps, kind, arch, libc,
-                     minf or "*", rc.cpu_needs(variant, arch)])
+                     rc.min_from_floor(ver, minf or "*"), rc.cpu_needs(variant, arch)])
 
     # Keep hand-listed rows that point somewhere else (not regenerable from disk).
     kept = []
@@ -193,7 +193,7 @@ def main():
             rows = [l.split() for l in old.decode().splitlines()
                     if l and not l.startswith("#") and len(l.split()) >= 5]
         for ver in sorted({r[0] for r in rows}, key=rc.verkey):
-            top.append((ver, v, (meta.get(ver) or ["", "", "*"])[2] or "*"))
+            top.append((ver, v, rc.min_from_floor(ver, (meta.get(ver) or ["", "", "*"])[2] or "*")))
 
     top.sort(key=lambda t: (rc.verkey(t[0]), rc.VARIANTS.index(t[1])))
     text = TOP_HEADER.format(product=prod) + "".join(

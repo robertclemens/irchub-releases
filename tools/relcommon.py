@@ -139,6 +139,27 @@ def verkey(v):
     return [int(x) if x.isdigit() else 0 for x in re.split(r"[.\-]", v.lstrip("v"))]
 
 
+# Mandatory stepping stones, the same for both products: a release newer than
+# one of these may only be installed over it or later, so every node runs it
+# once.  2.5.0 rewrites .cnf/.pass under the 600k PBKDF2 count (it still reads
+# the old 100k files); a build after it need not, and a rollback from it lands
+# on 2.5.0, which reads the new count.  Applied to meta.tsv by mkreleases.py
+# and to every manifest row by mkmanifest.py, so a forgotten --min-from cannot
+# publish a skip.
+MIN_FROM_FLOORS = ("2.5.0",)
+
+
+def min_from_floor(ver, min_from):
+    """min_from raised to the newest floor older than ver ('*' counts as oldest)."""
+    floors = [f for f in MIN_FROM_FLOORS if verkey(f) < verkey(ver)]
+    if not floors:
+        return min_from
+    floor = "v" + max(floors, key=verkey)
+    if min_from in ("", "*") or verkey(min_from) < verkey(floor):
+        return floor
+    return min_from
+
+
 # --------------------------------------------------------------- meta.tsv
 # version <TAB> date <TAB> src_deps <TAB> min_from <TAB> static_libs <TAB> commit.
 # One row per released version; the date is fixed the first time a version is

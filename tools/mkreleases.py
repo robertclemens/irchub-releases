@@ -445,6 +445,10 @@ def build_variant(prod, v, src, ver, ref, ctime, dirty, kinds, arch, smoke_on, a
            libs or row[3] or "-", (row[4] or "-") if dirty else ref]
     if a.min_from:
         row[2] = a.min_from
+    floored = rc.min_from_floor(ver, row[2])
+    if floored != row[2]:
+        print(f"  note: min_from {row[2]} -> {floored} (mandatory step, relcommon.MIN_FROM_FLOORS)")
+        row[2] = floored
     meta[key] = row
     rc.meta_save(meta_path, meta)
     print(f"  meta.tsv   {key}  date={row[0]} min_from={row[2]} static_libs={row[3]} "
