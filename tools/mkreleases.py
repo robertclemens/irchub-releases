@@ -240,6 +240,24 @@ def musl_target(arch):
     return t
 
 
+# The sandbox env overrides a testnet build compiles in (-DIRC_TEST_HOOKS /
+# --features test-hooks).  A binary that reads them could be pointed at
+# anyone's release tree and signing key by whoever sets its environment, so a
+# release carrying one of these names is refused outright.
+TEST_HOOK_VARS = (b"IRCBOT_UPDATE_BASE", b"IRCBOT_UPDATE_PUBKEY",
+                  b"IRCHUB_UPDATE_BASE", b"IRCHUB_UPDATE_PUBKEY",
+                  b"IRCHUB_BOT_RELEASE_BASE")
+
+
+def refuse_test_hooks(binary):
+    with open(binary, "rb") as f:
+        data = f.read()
+    hit = [v.decode() for v in TEST_HOOK_VARS if v in data]
+    if hit:
+        rc.die(f"{binary} was built with test hooks (reads {', '.join(hit)}); "
+               "a release must never carry them")
+
+
 def build(prod, variant, cfg, work, libc, arch):
     """Build in work/src; return the path of the finished, stripped binary."""
     srcdir = os.path.join(work, "src")
@@ -252,6 +270,7 @@ def build(prod, variant, cfg, work, libc, arch):
                  f"{cfg['build_static']} && strip {cfg['binary']}"])
         else:
             run_build(["bash", "-c", f"{cfg['build']} && strip {cfg['binary']}"], cwd=srcdir)
+        refuse_test_hooks(binary)
         return binary
 
     target_dir = os.path.join(CACHE, f"{prod}-releases", f"cargo-{variant}")
@@ -265,6 +284,7 @@ def build(prod, variant, cfg, work, libc, arch):
     run_build(cargo, cwd=srcdir, env={**os.environ, "CARGO_TARGET_DIR": target_dir,
                                 "CARGO_TERM_COLOR": "never"})
     run(["strip", binary])
+    refuse_test_hooks(binary)
     return binary
 
 
