@@ -143,10 +143,11 @@ def verkey(v):
 # one of these may only be installed over it or later, so every node runs it
 # once.  2.5.0 rewrites .cnf/.pass under the 600k PBKDF2 count (it still reads
 # the old 100k files); a build after it need not, and a rollback from it lands
-# on 2.5.0, which reads the new count.  Applied to meta.tsv by mkreleases.py
-# and to every manifest row by mkmanifest.py, so a forgotten --min-from cannot
-# publish a skip.
-MIN_FROM_FLOORS = ("2.5.0",)
+# on 2.5.0, which reads the new count.  2.5.1 is the oldest node a 2.5.2 hub
+# links with (MESH_MIN_VERSION), so a 2.5.0 node steps through it.  Applied to
+# meta.tsv by mkreleases.py and to every manifest row by mkmanifest.py, so a
+# forgotten --min-from cannot publish a skip.
+MIN_FROM_FLOORS = ("2.5.0", "2.5.1")
 
 
 def min_from_floor(ver, min_from):
