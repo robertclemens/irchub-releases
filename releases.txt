@@ -20,3 +20,5 @@ v2.5.0 c irchub/c/releases.txt *
 v2.5.0 rs irchub/rs/releases.txt *
 v2.5.1 c irchub/c/releases.txt v2.5.0
 v2.5.1 rs irchub/rs/releases.txt v2.5.0
+v2.5.2 c irchub/c/releases.txt v2.5.1
+v2.5.2 rs irchub/rs/releases.txt v2.5.1
