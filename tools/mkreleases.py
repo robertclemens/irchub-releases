@@ -92,6 +92,22 @@ def out(cmd, **kw):
 
 
 # ------------------------------------------------------------------ source
+def check_mesh_floor(src, ref, min_from):
+    """A release's min_from must reach its own MESH_MIN_VERSION: a node older
+    than that cannot link to the mesh at all, so a path through it would strand
+    the node, and the hub's multi-step plan relies on this."""
+    if ref:
+        text = subprocess.run(["git", "-C", src, "show", f"{ref}:hub.h"],
+                              capture_output=True, text=True).stdout
+    else:
+        with open(os.path.join(src, "hub.h")) as f:
+            text = f.read()
+    m = re.search(r'#define\s+MESH_MIN_VERSION\s+"([^"]+)"', text)
+    if m and (min_from in ("", "*") or rc.verkey(min_from) < rc.verkey(m.group(1))):
+        rc.die(f"min_from {min_from} is below this tree's MESH_MIN_VERSION {m.group(1)}: "
+               "add it to relcommon.MIN_FROM_FLOORS")
+
+
 def read_version(src, cfg, ref=None):
     """The version the daemon reports, from the work tree or from commit ref."""
     path = os.path.join(src, cfg["version_file"])
@@ -246,7 +262,7 @@ def musl_target(arch):
 # release carrying one of these names is refused outright.
 TEST_HOOK_VARS = (b"IRCBOT_UPDATE_BASE", b"IRCBOT_UPDATE_PUBKEY",
                   b"IRCHUB_UPDATE_BASE", b"IRCHUB_UPDATE_PUBKEY",
-                  b"IRCHUB_BOT_RELEASE_BASE")
+                  b"IRCHUB_BOT_RELEASE_BASE", b"IRCHUB_TEST_DRIVER_SILENCE")
 
 
 def refuse_test_hooks(binary):
@@ -469,6 +485,8 @@ def build_variant(prod, v, src, ver, ref, ctime, dirty, kinds, arch, smoke_on, a
     if floored != row[2]:
         print(f"  note: min_from {row[2]} -> {floored} (mandatory step, relcommon.MIN_FROM_FLOORS)")
         row[2] = floored
+    if cfg["version_file"] == "hub.h":
+        check_mesh_floor(src, ref if ref != "-" else None, row[2])
     meta[key] = row
     rc.meta_save(meta_path, meta)
     print(f"  meta.tsv   {key}  date={row[0]} min_from={row[2]} static_libs={row[3]} "

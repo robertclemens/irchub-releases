@@ -26,6 +26,7 @@ import argparse
 import glob
 import hashlib
 import os
+import tarfile
 import re
 import sys
 
@@ -48,6 +49,7 @@ HEADER = """\
 #   8 libc       gnu | musl | any
 #   9 min_from   oldest version this artifact may upgrade FROM ('*' = any)
 #  10 cpu        CPU features it needs ('-' = none; 'arch:feat' = only on arch)
+#  11 size       bytes on disk while installing: archive + unpacked
 """
 
 TOP_HEADER = """\
@@ -72,6 +74,12 @@ def read_bytes(path):
             return f.read()
     except FileNotFoundError:
         return None
+
+
+def disk_bytes(path):
+    """Column 11: what the archive and its contents take while a node installs it."""
+    with tarfile.open(path, "r:gz") as t:
+        return os.path.getsize(path) + sum(m.size for m in t.getmembers() if m.isfile())
 
 
 def write_manifest(path, text):
@@ -133,7 +141,8 @@ def variant_rows(prod, variant, base):
         deps = "none" if kind == "bin" else (deps or rc.PRODUCTS[prod][variant]["src_deps"])
         url = f"{ours}{'binaries' if kind == 'bin' else 'sources'}/{name}"
         rows.append([ver, date or rc.today(), url, sha256(path), deps, kind, arch, libc,
-                     rc.min_from_floor(ver, minf or "*"), rc.cpu_needs(variant, arch)])
+                     rc.min_from_floor(ver, minf or "*"), rc.cpu_needs(variant, arch),
+                     str(disk_bytes(path))])
 
     # Keep hand-listed rows that point somewhere else (not regenerable from disk).
     kept = []
