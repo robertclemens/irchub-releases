@@ -28,6 +28,9 @@ import hashlib
 import os
 import tarfile
 import re
+import shutil
+import subprocess
+import tempfile
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -50,6 +53,12 @@ HEADER = """\
 #   9 min_from   oldest version this artifact may upgrade FROM ('*' = any)
 #  10 cpu        CPU features it needs ('-' = none; 'arch:feat' = only on arch)
 #  11 size       bytes on disk while installing: archive + unpacked
+#  12 libc_min   a gnu build's minimum glibc ('-' = none): a 2.5.4+ updater
+#                skips the row on a host whose glibc is known to be older
+#  13 needs      a gnu build's libraries and the highest symbol version it
+#                needs per prefix: lib@V+V,lib@V ('-' = none / not checked);
+#                a 2.5.4+ updater skips the row, before downloading, on a host
+#                whose own library is missing or lacks one of the versions
 """
 
 TOP_HEADER = """\
@@ -80,6 +89,88 @@ def disk_bytes(path):
     """Column 11: what the archive and its contents take while a node installs it."""
     with tarfile.open(path, "r:gz") as t:
         return os.path.getsize(path) + sum(m.size for m in t.getmembers() if m.isfile())
+
+
+def gnu_binary_info(path, libc):
+    """objdump -T and -p of a gnu artifact's binary (read from the artifact
+    itself, so every row, old ones too, gets columns 12 and 13), or None for
+    any other row or when it cannot be read."""
+    if libc != "gnu":
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="mkman-") as d, tarfile.open(path, "r:gz") as t:
+            m = next((m for m in t.getmembers()
+                      if m.isfile() and os.path.basename(m.name) in ("ircbot", "irchub")), None)
+            if m is None:
+                return None
+            src = t.extractfile(m)
+            out = os.path.join(d, "bin")
+            with open(out, "wb") as fh:
+                shutil.copyfileobj(src, fh)
+            return tuple(subprocess.run(["objdump", flag, out], capture_output=True, text=True,
+                                        check=True).stdout for flag in ("-T", "-p"))
+    except (OSError, tarfile.TarError, subprocess.CalledProcessError):
+        return None
+
+
+def libc_min(info):
+    """Column 12: the highest GLIBC_x.y symbol version a gnu artifact's binary
+    needs (objdump -T, as mkreleases.glibc_needed); '-' for any other row or
+    when it cannot be read.  2.5.4+ updaters skip a gnu row on a host whose
+    glibc is known to be older, without downloading it."""
+    if info is None:
+        return "-"
+    vers = {tuple(int(x) for x in v.split("."))
+            for v in re.findall(r"GLIBC_([0-9]+(?:\.[0-9]+)+)", info[0])}
+    return ".".join(map(str, max(vers))) if vers else "-"
+
+
+NEEDS_MAX = 511   # column 13 longer than this is written as '-'
+
+
+def _ver_key(v):
+    """'OPENSSL_3.4.0' -> ('OPENSSL', (3, 4, 0)); a name with no number is its own prefix."""
+    m = re.fullmatch(r"(.*?)_([0-9]+(?:\.[0-9]+)*)", v)
+    return (m.group(1), tuple(int(x) for x in m.group(2).split("."))) if m else (v, ())
+
+
+def needs(info):
+    """Column 13: every DT_NEEDED library with the symbol versions the binary
+    requires from it (objdump -p "Version References"), only the highest per
+    version-name prefix, as lib@V+V,lib@V,...; '-' for static/src rows, when
+    it cannot be read, or when it would not fit in NEEDS_MAX bytes.  The
+    libraries we link define versions cumulatively, so the highest is enough;
+    2.5.4+ updaters check each against the host's own library before any
+    download (irchub docs/plans/2026-11-20_artifact_choice_plan.md §4a)."""
+    if info is None:
+        return "-"
+    libs, refs, cur = [], {}, None
+    for line in info[1].splitlines():
+        f = line.split()
+        if len(f) == 2 and f[0] == "NEEDED" and f[1] not in libs:
+            libs.append(f[1])
+        elif line.strip().startswith("required from ") and line.rstrip().endswith(":"):
+            cur = line.strip()[len("required from "):-1]
+            refs.setdefault(cur, {})
+        elif cur and len(f) == 4 and f[0].startswith("0x"):
+            pre, num = _ver_key(f[3])
+            if pre not in refs[cur] or _ver_key(refs[cur][pre])[1] < num:
+                refs[cur][pre] = f[3]
+        elif not line.startswith(" ") and line.strip():
+            cur = None
+    if not libs:
+        return "-"
+    items = [lib + ("@" + "+".join(refs[lib].values()) if refs.get(lib) else "") for lib in libs]
+    out = ",".join(items)
+    ok = re.fullmatch(r"[A-Za-z0-9._+-]+(@[A-Za-z0-9._]+(\+[A-Za-z0-9._]+)*)?"
+                      r"(,[A-Za-z0-9._+-]+(@[A-Za-z0-9._]+(\+[A-Za-z0-9._]+)*)?)*", out)
+    return out if ok and len(out) <= NEEDS_MAX else "-"
+
+
+def gnu_cols(path, libc):
+    """Columns 12 and 13 of one row."""
+    info = gnu_binary_info(path, libc)
+    return libc_min(info), needs(info)
 
 
 def write_manifest(path, text):
@@ -142,7 +233,7 @@ def variant_rows(prod, variant, base):
         url = f"{ours}{'binaries' if kind == 'bin' else 'sources'}/{name}"
         rows.append([ver, date or rc.today(), url, sha256(path), deps, kind, arch, libc,
                      rc.min_from_floor(ver, minf or "*"), rc.cpu_needs(variant, arch),
-                     str(disk_bytes(path))])
+                     str(disk_bytes(path)), *gnu_cols(path, libc)])
 
     # Keep hand-listed rows that point somewhere else (not regenerable from disk).
     kept = []
