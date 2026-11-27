@@ -262,7 +262,8 @@ def musl_target(arch):
 # release carrying one of these names is refused outright.
 TEST_HOOK_VARS = (b"IRCBOT_UPDATE_BASE", b"IRCBOT_UPDATE_PUBKEY",
                   b"IRCHUB_UPDATE_BASE", b"IRCHUB_UPDATE_PUBKEY",
-                  b"IRCHUB_BOT_RELEASE_BASE", b"IRCHUB_TEST_DRIVER_SILENCE")
+                  b"IRCHUB_BOT_RELEASE_BASE", b"IRCHUB_TEST_DRIVER_SILENCE",
+                  b"IRCHUB_TEST_PUBIP")
 
 
 def refuse_test_hooks(binary):
